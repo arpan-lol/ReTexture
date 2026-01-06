@@ -304,18 +304,45 @@ def generate_single_variation(image_bytes: bytes, user_concept: str, style: str 
     
     print(f"[AI DEBUG] Starting {style} variation generation")
     
-    # Remove background using rembg
+    # First resize image to make rembg faster (512x512 is much faster than 1024x1024)
     try:
-        print(f"[AI DEBUG] Removing background with rembg...")
-        product_no_bg = remove(image_bytes)
-        product_img = Image.open(io.BytesIO(product_no_bg)).convert('RGBA')
-        print(f"[AI DEBUG] Background removed, product size: {product_img.size}")
+        with Image.open(io.BytesIO(image_bytes)) as img:
+            # Reduce to 512x512 for faster processing
+            img.thumbnail((512, 512), Image.Resampling.LANCZOS)
+            if img.mode != 'RGBA':
+                img = img.convert('RGBA')
+            
+            # Save to bytes for rembg
+            temp_buffer = io.BytesIO()
+            img.save(temp_buffer, format='PNG')
+            resized_bytes = temp_buffer.getvalue()
+            print(f"[AI DEBUG] Resized to {img.size} for faster processing")
     except Exception as e:
-        print(f"[AI DEBUG] Error removing background: {e}")
+        print(f"[AI DEBUG] Error resizing: {e}")
         return None
     
-    # Create styled background based on style
-    canvas_size = (1024, 1024)
+    # Remove background using rembg with fast model
+    try:
+        print(f"[AI DEBUG] Removing background with rembg (fast model)...")
+        # Use u2net_human_seg for faster processing (if it's a person) or u2net for general
+        product_no_bg = remove(resized_bytes, alpha_matting=False)  # Disable alpha matting for speed
+        product_img = Image.open(io.BytesIO(product_no_bg)).convert('RGBA')
+        print(f"[AI DEBUG] Background removed in, product size: {product_img.size}")
+    except Exception as e:
+        print(f"[AI DEBUG] Error removing background: {e}")
+        # Fallback: use original image without background removal
+        try:
+            with Image.open(io.BytesIO(image_bytes)) as img:
+                img.thumbnail((512, 512), Image.Resampling.LANCZOS)
+                if img.mode != 'RGBA':
+                    img = img.convert('RGBA')
+                product_img = img.copy()
+                print(f"[AI DEBUG] Using original image without background removal")
+        except:
+            return None
+    
+    # Create styled background based on style (512x512 for speed)
+    canvas_size = (512, 512)
     
     try:
         if style == "studio":
