@@ -262,13 +262,11 @@ async def generate_variations_stream(req: VariationsRequest):
         try:
             from app.core.ai_service import generate_single_variation
             import base64 as b64
-            import asyncio
-            from concurrent.futures import ThreadPoolExecutor
 
             image_bytes = b64.b64decode(req.image_data)
             concept = req.concept or "product photography"
             print(f"[AGENT] Decoded image bytes: {len(image_bytes)}")
-            log_memory_usage("Before parallel generation")
+            log_memory_usage("Before generation")
 
             # Send initial event
             start_event = f"data: {json.dumps({'type': 'start', 'total': 3})}\n\n"
@@ -277,38 +275,20 @@ async def generate_variations_stream(req: VariationsRequest):
 
             styles = ["studio", "lifestyle", "creative"]
             
-            # Create thread pool for parallel processing
-            executor = ThreadPoolExecutor(max_workers=3)
-            print(f"[AGENT] 🚀 Starting PARALLEL generation of all 3 variations...")
+            # Process variations SEQUENTIALLY to stay within 512MB memory limit
+            print(f"[AGENT] 🎨 Starting SEQUENTIAL generation (memory-efficient)")
 
-            # Submit all variations to thread pool
-            loop = asyncio.get_event_loop()
-            futures = []
             for i, style in enumerate(styles):
-                print(f"[AGENT] 🎯 Submitting {style} variation to thread pool...")
-                future = loop.run_in_executor(
-                    executor,
-                    generate_single_variation,
-                    image_bytes,
-                    concept,
-                    style
-                )
-                futures.append((i, style, future))
+                print(f"\n[AGENT] === VARIATION {i + 1}/3 ({style}) ===")
 
-            # Process results as they complete
-            print(f"[AGENT] ⏳ Waiting for variations to complete...")
-            for i, style, future in futures:
-                print(f"\n[AGENT] === PROCESSING VARIATION {i + 1}/3 ({style}) ===")
-
-                # Send progress event when we start waiting for this one
+                # Send progress event
                 progress_event = f"data: {json.dumps({'type': 'progress', 'index': i, 'style': style})}\n\n"
                 print(f"[AGENT] 📤 Sending PROGRESS event for {style}")
                 yield progress_event
 
                 try:
-                    # Wait for this specific variation to complete
-                    print(f"[AGENT] ⏳ Awaiting {style} variation result...")
-                    variation = await future
+                    print(f"[AGENT] 🎨 Generating {style} variation...")
+                    variation = generate_single_variation(image_bytes, concept, style)
                     log_memory_usage(f"After {style} generation")
 
                     if variation:
@@ -328,12 +308,11 @@ async def generate_variations_stream(req: VariationsRequest):
                         yield error_event
 
                 except Exception as e:
-                    print(f"[AGENT] ❌ Error processing variation {i + 1} ({style}): {e}")
+                    print(f"[AGENT] ❌ Error generating variation {i + 1} ({style}): {e}")
+                    import traceback
+                    print(f"[AGENT] Traceback:\n{traceback.format_exc()}")
                     error_event = f"data: {json.dumps({'type': 'error', 'index': i, 'message': str(e)})}\n\n"
                     yield error_event
-
-            # Clean up executor
-            executor.shutdown(wait=False)
 
             complete_event = f"data: {json.dumps({'type': 'complete'})}\n\n"
             print(f"[AGENT] 📤 Sending COMPLETE event")
