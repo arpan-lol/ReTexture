@@ -217,7 +217,18 @@ Canvas serialization respects format-aware safe zones (9:16 vs 1:1 aspect ratios
 
 ---
 
-## 📝 License
+## Wireframes
+
+![Screenshot 1](./screenshots/14.png)
+![Screenshot 2](./screenshots/15.png)
+![Screenshot 3](./screenshots/16.png)
+![Screenshot 4](./screenshots/17.png)
+![Screenshot 5](./screenshots/18.png)
+![Screenshot 6](./screenshots/19.png)
+
+---
+
+## License
 
 MIT License - see [LICENSE](LICENSE) file for details.
 
