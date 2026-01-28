@@ -3,6 +3,42 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from typing import Optional
+from pathlib import Path
+from dotenv import load_dotenv
+
+# Load environment variables ONCE at startup
+env_path = Path(__file__).resolve().parent.parent / ".env"
+if env_path.exists():
+    load_dotenv(dotenv_path=env_path)
+    print(f"✅ Environment loaded from: {env_path}")
+else:
+    print(f"⚠️  No .env file found at {env_path}, using system environment variables")
+
+# Validate critical environment variables
+import os
+REQUIRED_VARS = {
+    "GEMINI_MODEL_ID": "gemini-2.5-flash",
+}
+
+missing_critical = []
+for var, default in REQUIRED_VARS.items():
+    if not os.getenv(var):
+        if default:
+            os.environ[var] = default
+            print(f"ℹ️  Using default for {var}: {default}")
+        else:
+            missing_critical.append(var)
+
+# Check authentication credentials
+has_api_key = bool(os.getenv("GOOGLE_API_KEY"))
+has_gcp_creds = bool(os.getenv("GCP_PROJECT_ID"))
+
+if not has_api_key and not has_gcp_creds:
+    print("⚠️  WARNING: No AI credentials found (GOOGLE_API_KEY or GCP_PROJECT_ID)")
+    print("   AI features will not work until credentials are configured")
+else:
+    auth_method = "Vertex AI" if has_gcp_creds else "API Key"
+    print(f"✅ AI authentication available: {auth_method}")
 
 # from rembg import remove  # Moved inside endpoint to prevent startup hang
 from PIL import Image
@@ -10,11 +46,11 @@ import io
 import base64
 import json
 import logging
-import os
 from app.core.models import ValidationRequest, ValidationResponse
-from app.core.prompts import COMPLIANCE_SYSTEM_PROMPT
-from app.routers import headline_routes  # NEW: Headline generator routes
-from app.routers import validate  # NEW: Validation and auto-fix routes
+from app.prompts.compliance_prompts import COMPLIANCE_SYSTEM_PROMPT
+from app.config import ServerConfig, URLs
+from app.routers import headline_routes
+from app.routers import validate
 from google import genai
 from google.genai import types
 
@@ -32,16 +68,11 @@ app.include_router(validate.router)
 # CORS - Fixed for production deployment
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:3000",
-        "http://localhost:5173", 
-        "https://retexture.vercel.app",
-        "https://retexture.onrender.com"
-    ],
-    allow_credentials=True,
-    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-    allow_headers=["*"],
-    expose_headers=["*"],
+    allow_origins=URLs.CORS_ORIGINS,
+    allow_credentials=ServerConfig.ALLOW_CREDENTIALS,
+    allow_methods=ServerConfig.ALLOW_METHODS,
+    allow_headers=ServerConfig.ALLOW_HEADERS,
+    expose_headers=ServerConfig.EXPOSE_HEADERS,
 )
 
 
@@ -411,4 +442,4 @@ async def validate_canvas(req: ValidationRequest) -> ValidationResponse:
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run(app, host=ServerConfig.HOST, port=ServerConfig.PORT)

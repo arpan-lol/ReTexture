@@ -10,11 +10,27 @@ import logging
 import sys
 from datetime import datetime
 from typing import Optional
-from dotenv import load_dotenv
 from google import genai
 from google.genai import types
 
-load_dotenv()
+from app.core.shared_ai_client import GeminiClientFactory, get_model_id
+from app.core.rate_limiter import get_headline_rate_limiter
+from app.core.json_parser import (
+    JSONParseError,
+    parse_keyword_response,
+    parse_headline_response,
+    extract_json_object,
+    safe_extract_json
+)
+from app.prompts.headline_prompts import (
+    TESCO_BRAND_GUIDELINES,
+    KEYWORD_SUGGESTION_PROMPT,
+    HEADLINE_GENERATION_PROMPT,
+    SUBHEADING_GENERATION_PROMPT,
+    TEXT_PLACEMENT_ANALYSIS_PROMPT,
+    TYPOGRAPHY_STYLING_PROMPT
+)
+from app.config import Colors, Typography, AIConfig
 
 
 # Configure JSON logging for heavy terminal output
@@ -57,71 +73,46 @@ def log_json(level: str, message: str, **data):
     logger.handle(record)
 
 
-# Configuration - USE API KEY like existing ai_service.py
-API_KEY = os.getenv("GOOGLE_API_KEY", "")
-MODEL_ID = os.getenv("GEMINI_MODEL_ID", "gemini-2.5-flash")
+# Configuration
+MODEL_ID = get_model_id()
+rate_limiter = get_headline_rate_limiter()
 
 log_json(
     "INFO",
     "🚀 Headline Service Initialized",
     model=MODEL_ID,
-    has_api_key=bool(API_KEY),
 )
 
 
-# Rate limiting
-generation_counts = {}
-MAX_GENERATIONS_PER_DESIGN = 10
-
-# Tesco Brand Guidelines
-TESCO_BRAND_GUIDELINES = """
-Tesco Brand Voice Guidelines:
-- Friendly, warm, and approachable
-- Value-focused but not cheap
-- Clear and simple language
-- Family-friendly
-- Confident but not arrogant
-- Helpful and informative
-
-Avoid:
-- Promotional language ("Free", "Win", "% off", "Prize")
-- Complex or jargon-heavy words
-- Negative or offensive language
-- Exaggerated claims
-"""
-
-
 def _init_gemini_client():
-    """Initialize Gemini client with API key"""
+    """Initialize Gemini client with shared factory"""
     log_json(
         "INFO",
-        "📦 Initializing Gemini client with API key...",
+        "📦 Initializing Gemini client...",
         model=MODEL_ID,
     )
 
-    if not API_KEY:
-        raise ValueError("GOOGLE_API_KEY is not set in environment variables")
-
-    client = genai.Client(api_key=API_KEY)
-    log_json("INFO", "✅ Gemini client initialized (API Key)")
-    return client
+    try:
+        client = GeminiClientFactory.get_client()
+        log_json("INFO", f"✅ Gemini client initialized ({GeminiClientFactory.get_auth_method()})")
+        return client
+    except Exception as e:
+        log_json("ERROR", f"❌ Failed to initialize Gemini client: {e}")
+        raise
 
 
 def _check_rate_limit(design_id: str) -> bool:
-    """Check if design has exceeded rate limit"""
-    count = generation_counts.get(design_id, 0)
-    logger.info(
-        f"🔢 [HEADLINE SERVICE] Rate limit check: design={design_id}, count={count}/{MAX_GENERATIONS_PER_DESIGN}"
-    )
-
-    if count >= MAX_GENERATIONS_PER_DESIGN:
+    """Check if design has exceeded rate limit (time-windowed)"""
+    is_allowed = rate_limiter.check_limit(design_id)
+    
+    if not is_allowed:
+        limit_info = rate_limiter.get_limit_info(design_id)
         logger.warning(
-            f"⚠️ [HEADLINE SERVICE] Rate limit exceeded for design {design_id}"
+            f"⚠️ [HEADLINE SERVICE] Rate limit exceeded for design {design_id}: "
+            f"{limit_info['used']}/{limit_info['limit']} in last {limit_info['window_minutes']}min"
         )
-        return False
-
-    generation_counts[design_id] = count + 1
-    return True
+    
+    return is_allowed
 
 
 def _decode_base64_image(image_base64: str) -> bytes:
@@ -148,17 +139,7 @@ async def suggest_keywords(image_base64: str) -> dict:
         client = _init_gemini_client()
         image_bytes = _decode_base64_image(image_base64)
 
-        prompt = """Analyze this product image and suggest 5-7 relevant marketing keywords.
-        
-        Focus on:
-        - Product category (e.g., dairy, snacks, beverages)
-        - Key attributes (e.g., organic, fresh, premium)
-        - Emotional associations (e.g., healthy, delicious, family)
-        - Usage occasions (e.g., breakfast, party, everyday)
-        
-        Return ONLY a JSON array of keywords, no explanation:
-        ["keyword1", "keyword2", "keyword3", ...]
-        """
+        prompt = KEYWORD_SUGGESTION_PROMPT
 
         logger.info("📤 [HEADLINE SERVICE] Sending keyword request to Gemini...")
 
@@ -178,16 +159,13 @@ async def suggest_keywords(image_base64: str) -> dict:
         result_text = response.text.strip()
         logger.info(f"📥 [HEADLINE SERVICE] Gemini response: {result_text}")
 
-        # Parse JSON response
-        # Try to extract JSON array from response
-        if "[" in result_text:
-            json_start = result_text.index("[")
-            json_end = result_text.rindex("]") + 1
-            keywords = json.loads(result_text[json_start:json_end])
-        else:
+        # Parse JSON response with robust parser
+        try:
+            keywords = parse_keyword_response(result_text)
+            logger.info(f"✅ [HEADLINE SERVICE] Keywords extracted: {keywords}")
+        except JSONParseError as e:
+            logger.warning(f"⚠️ [HEADLINE SERVICE] JSON parsing failed: {e}, using fallback")
             keywords = ["product", "quality", "fresh", "value", "Tesco"]
-
-        logger.info(f"✅ [HEADLINE SERVICE] Keywords extracted: {keywords}")
 
         return {"success": True, "keywords": keywords}
 
@@ -236,26 +214,7 @@ async def generate_headlines(
             "\n".join(context_parts) if context_parts else "General product promotion"
         )
 
-        prompt = f"""You are a Tesco brand copywriter. Analyze this product image and generate 3 headline options.
-
-{TESCO_BRAND_GUIDELINES}
-
-Context:
-{context}
-
-Requirements:
-- Maximum 5 words per headline
-- Catchy and memorable
-- Appropriate for Tesco retail marketing
-- No promotional language (no "free", "win", "% off")
-
-Return ONLY a JSON array with 3 headlines:
-[
-  {{"text": "Headline 1", "confidence": 0.95}},
-  {{"text": "Headline 2", "confidence": 0.85}},
-  {{"text": "Headline 3", "confidence": 0.75}}
-]
-"""
+        prompt = HEADLINE_GENERATION_PROMPT(context)
 
         logger.info("📤 [HEADLINE SERVICE] Sending headline request to Gemini...")
 
@@ -275,19 +234,17 @@ Return ONLY a JSON array with 3 headlines:
         result_text = response.text.strip()
         logger.info(f"📥 [HEADLINE SERVICE] Gemini response: {result_text[:200]}...")
 
-        # Parse JSON response
-        if "[" in result_text:
-            json_start = result_text.index("[")
-            json_end = result_text.rindex("]") + 1
-            headlines = json.loads(result_text[json_start:json_end])
-        else:
+        # Parse JSON response with robust parser
+        try:
+            headlines = parse_headline_response(result_text)
+            logger.info(f"✅ [HEADLINE SERVICE] Headlines generated: {len(headlines)}")
+        except JSONParseError as e:
+            logger.warning(f"⚠️ [HEADLINE SERVICE] JSON parsing failed: {e}, using fallback")
             headlines = [
                 {"text": "Quality You Can Trust", "confidence": 0.9},
                 {"text": "Fresh Every Day", "confidence": 0.8},
                 {"text": "Taste the Difference", "confidence": 0.7},
             ]
-
-        logger.info(f"✅ [HEADLINE SERVICE] Headlines generated: {len(headlines)}")
 
         return {"success": True, "headlines": headlines}
 
@@ -332,27 +289,7 @@ async def generate_subheadings(
             "\n".join(context_parts) if context_parts else "General product promotion"
         )
 
-        prompt = f"""You are a Tesco brand copywriter. Analyze this product image and generate 3 subheading options.
-
-{TESCO_BRAND_GUIDELINES}
-
-Context:
-{context}
-
-Requirements:
-- 8-15 words per subheading
-- Descriptive and informative
-- Supports the main headline
-- Highlights product benefits
-- Appropriate for Tesco retail marketing
-
-Return ONLY a JSON array with 3 subheadings:
-[
-  {{"text": "Subheading 1 with more descriptive text", "confidence": 0.95}},
-  {{"text": "Subheading 2 with more descriptive text", "confidence": 0.85}},
-  {{"text": "Subheading 3 with more descriptive text", "confidence": 0.75}}
-]
-"""
+        prompt = SUBHEADING_GENERATION_PROMPT(context)
 
         logger.info("📤 [HEADLINE SERVICE] Sending subheading request to Gemini...")
 
@@ -372,12 +309,12 @@ Return ONLY a JSON array with 3 subheadings:
         result_text = response.text.strip()
         logger.info(f"📥 [HEADLINE SERVICE] Gemini response: {result_text[:200]}...")
 
-        # Parse JSON response
-        if "[" in result_text:
-            json_start = result_text.index("[")
-            json_end = result_text.rindex("]") + 1
-            subheadings = json.loads(result_text[json_start:json_end])
-        else:
+        # Parse JSON response with robust parser
+        try:
+            subheadings = parse_headline_response(result_text)  # Same structure as headlines
+            logger.info(f"✅ [HEADLINE SERVICE] Subheadings generated: {len(subheadings)}")
+        except JSONParseError as e:
+            logger.warning(f"⚠️ [HEADLINE SERVICE] JSON parsing failed: {e}, using fallback")
             subheadings = [
                 {
                     "text": "Premium quality products sourced for your family",
@@ -389,8 +326,6 @@ Return ONLY a JSON array with 3 subheadings:
                 },
                 {"text": "Fresh from farm to your table every day", "confidence": 0.7},
             ]
-
-        logger.info(f"✅ [HEADLINE SERVICE] Subheadings generated: {len(subheadings)}")
 
         return {"success": True, "subheadings": subheadings}
 
@@ -500,22 +435,18 @@ CRITICAL RULES:
             response_length=len(result_text),
         )
 
-        # Parse JSON response
-        if "{" in result_text:
-            json_start = result_text.index("{")
-            json_end = result_text.rindex("}") + 1
-            placement = json.loads(result_text[json_start:json_end])
-
+        # Parse JSON response with robust parser
+        try:
+            placement = extract_json_object(result_text)
             log_json(
                 "INFO",
                 "✅ Smart placement calculated",
                 subject_position=placement.get("subject_position"),
                 background=placement.get("background_brightness"),
             )
-
             return {"success": True, "placement": placement}
-        else:
-            # Fallback to safe defaults
+        except JSONParseError as e:
+            log_json("WARNING", f"⚠️ Smart placement JSON parsing failed: {e}, using defaults")
             return _get_default_placement(canvas_width, canvas_height)
 
     except Exception as e:
@@ -647,9 +578,8 @@ def suggest_text_color(background_color: str = "#1a1a1a") -> dict:
 
 def reset_rate_limit(design_id: str):
     """Reset rate limit for a design (for testing)"""
-    if design_id in generation_counts:
-        del generation_counts[design_id]
-        logger.info(f"🔄 [HEADLINE SERVICE] Rate limit reset for design: {design_id}")
+    rate_limiter.reset_key(design_id)
+    logger.info(f"🔄 [HEADLINE SERVICE] Rate limit reset for design: {design_id}")
 
 
 # ============== FONT STYLING SERVICE ==============
@@ -725,15 +655,14 @@ Text transform: none, uppercase, capitalize
             response_length=len(result_text),
         )
 
-        # Parse JSON response
-        if "{" in result_text:
-            json_start = result_text.index("{")
-            json_end = result_text.rindex("}") + 1
-            font_style = json.loads(result_text[json_start:json_end])
+        # Parse JSON response with robust parser
+        try:
+            font_style = extract_json_object(result_text)
 
             # Validate mood
             if font_style.get("mood") not in AVAILABLE_MOODS:
-                font_style["mood"] = "modern"  # Default fallback
+                log_json("WARNING", f"Invalid mood '{font_style.get('mood')}', using 'modern'")
+                font_style["mood"] = "modern"
 
             log_json(
                 "INFO",
@@ -743,7 +672,8 @@ Text transform: none, uppercase, capitalize
             )
 
             return {"success": True, "fontStyle": font_style}
-        else:
+        except JSONParseError as e:
+            log_json("WARNING", f"⚠️ Font analysis JSON parsing failed: {e}, using defaults")
             return _get_default_font_style()
 
     except Exception as e:

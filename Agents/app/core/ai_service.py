@@ -8,6 +8,10 @@ from google import genai
 from google.genai import types
 from PIL import Image
 
+# Import prompts and config
+from app.prompts.generation_prompts import get_background_generation_prompt
+from app.config import AIConfig, Paths
+
 # Load .env from the Agents directory (parent of app/core)
 env_path = Path(__file__).resolve().parent.parent.parent / ".env"
 load_dotenv(dotenv_path=env_path)
@@ -15,33 +19,10 @@ print(f"[AI_SERVICE] Loading .env from: {env_path}")
 print(f"[AI_SERVICE] GOOGLE_API_KEY loaded: {'Yes' if os.getenv('GOOGLE_API_KEY') else 'No'}")
 
 # Get GCP credentials from environment variables
-PROJECT_ID = os.getenv("GCP_PROJECT_ID")
-LOCATION = os.getenv("GCP_LOCATION")
+PROJECT_ID = AIConfig.PROJECT_ID
+LOCATION = AIConfig.LOCATION
 # Use model from env (Imagen for image generation, Gemini for text)
-MODEL_ID = os.getenv("GEMINI_MODEL_ID")
-
-# Tesco Retail Media Compliance Rules - Applied to all AI generations
-TESCO_COMPLIANCE_SUFFIX = """
-
-=== TESCO RETAIL MEDIA COMPLIANCE (MANDATORY) ===
-Layout Rules:
-- Leave top 100px relatively clear for headline text overlay
-- Leave bottom 150px relatively clear for Tesco tag, logo, and value tile placement
-- Center the product with breathing room on all sides
-
-Hard Restrictions - Absolutely NO:
-- Text, words, letters, typography, numbers, or any written content
-- Logos, watermarks, symbols, brand marks, or trademarks  
-- People, faces, human figures, hands, or body parts
-- Offensive, controversial, or non-brand-safe imagery
-- Distortions or modifications to the original product
-- Cluttered backgrounds that compete with the product
-
-Brand Safety:
-- Professional, family-friendly, premium retail aesthetic
-- Background should complement, never overpower the product
-- Maintain natural, realistic product appearance
-"""
+MODEL_ID = AIConfig.DEFAULT_MODEL
 
 
 def generate_variations(product_filename: str, user_concept: str) -> list[str]:
@@ -69,46 +50,12 @@ def generate_variations(product_filename: str, user_concept: str) -> list[str]:
         location=LOCATION,
     )
 
-    styles = [
-        # STUDIO - Clean e-commerce style
-        f"""Professional e-commerce product photography of the provided product.
-Background: Seamless pure white cyclorama studio backdrop, subtle gradient shadow beneath product.
-Lighting: Three-point studio lighting setup - key light (softbox 45° left), fill light (right), hair light (top-back). 
-Natural light falloff, no harsh highlights.
-Camera: Shot on Canon EOS R5, 100mm macro lens, f/8, 1/160s, ISO 100.
-Style: Clean, minimal, {user_concept}. Editorial quality suitable for Tesco retail website.
-Realism: Natural product texture preserved, subtle surface imperfections visible, realistic reflections on glossy surfaces.
-{TESCO_COMPLIANCE_SUFFIX}""",
-        # LIFESTYLE - Contextual setting  
-        f"""High-end lifestyle product photography featuring the provided product.
-Scene: {user_concept} - Product naturally placed in an aspirational real-world setting, 
-slightly asymmetric composition for organic feel.
-Lighting: Natural window light from left side, golden hour warmth (5500K-6000K color temperature),
-soft shadows with natural falloff, subtle rim light from window reflection.
-Camera: Shot on Sony A7R IV, 35mm prime lens, f/2.8 for shallow depth of field, ISO 200.
-Bokeh on background elements, foreground product tack-sharp.
-Style: Editorial magazine quality, authentic lifestyle moment, premium brand aesthetic.
-Realism: Environmental reflections on product, natural dust particles in light rays, 
-micro-scratches on surfaces, realistic fabric textures.
-{TESCO_COMPLIANCE_SUFFIX}""",
-        # CREATIVE - Bold advertising
-        f"""Bold commercial advertising campaign photography of the provided product.
-Scene: Dramatic studio setup with colored gel lighting, {user_concept}.
-Background: Deep gradient backdrop (dark to darker), professional studio environment.
-Lighting: Cinematic three-point lighting with colored gels - teal/orange complementary scheme,
-strong key light (grid softbox left), subtle fill, dramatic rim light creating edge separation.
-Light falloff creating depth and dimension. Volumetric light haze optional.
-Camera: Shot on Hasselblad H6D-100c, 80mm f/2.8 lens, medium format quality.
-Shallow DOF with product sharp, slight motion blur on any floating elements.
-Style: Premium advertising campaign, {user_concept}, brand hero shot quality.
-Realism: Product surface catching colored light realistically, specular highlights on edges,
-natural material properties (metal reflects, matte absorbs), subtle lens flare if applicable.
-{TESCO_COMPLIANCE_SUFFIX}"""
-    ]
+    styles = ["studio", "lifestyle", "creative"]
 
     generated_files = []
 
-    for i, style_prompt in enumerate(styles):
+    for i, style in enumerate(styles):
+        style_prompt = get_background_generation_prompt(style, user_concept)
         try:
             full_prompt = f"""
             Keep the product in the input image EXACTLY unchanged.
@@ -171,60 +118,19 @@ def generate_variations_from_bytes(image_bytes: bytes, user_concept: str) -> lis
         img.save(img_byte_arr, format='PNG')
         product_bytes = img_byte_arr.getvalue()
 
-    if not PROJECT_ID or not LOCATION or not MODEL_ID:
-        raise ValueError("Missing required environment variables: GCP_PROJECT_ID, GCP_LOCATION, or GEMINI_MODEL_ID")
-    
     try:
-        client = genai.Client(
-            vertexai=True,
-            project=PROJECT_ID,
-            location=LOCATION,
-        )
+        client = GeminiClientFactory.get_client()
     except Exception as e:
         print(f"Failed to initialize Gemini client: {e}")
         raise
 
-    styles = [
-        # STUDIO - Clean e-commerce style
-        f"""Professional e-commerce product photography of the provided product.
-Background: Seamless pure white cyclorama studio backdrop, subtle gradient shadow beneath product.
-Lighting: Three-point studio lighting setup - key light (softbox 45° left), fill light (right), hair light (top-back). 
-Natural light falloff, no harsh highlights.
-Camera: Shot on Canon EOS R5, 100mm macro lens, f/8, 1/160s, ISO 100.
-Style: Clean, minimal, {user_concept}. Editorial quality suitable for Tesco retail website.
-Realism: Natural product texture preserved, subtle surface imperfections visible, realistic reflections on glossy surfaces.
-{TESCO_COMPLIANCE_SUFFIX}""",
-        # LIFESTYLE - Contextual setting  
-        f"""High-end lifestyle product photography featuring the provided product.
-Scene: {user_concept} - Product naturally placed in an aspirational real-world setting, 
-slightly asymmetric composition for organic feel.
-Lighting: Natural window light from left side, golden hour warmth (5500K-6000K color temperature),
-soft shadows with natural falloff, subtle rim light from window reflection.
-Camera: Shot on Sony A7R IV, 35mm prime lens, f/2.8 for shallow depth of field, ISO 200.
-Bokeh on background elements, foreground product tack-sharp.
-Style: Editorial magazine quality, authentic lifestyle moment, premium brand aesthetic.
-Realism: Environmental reflections on product, natural dust particles in light rays, 
-micro-scratches on surfaces, realistic fabric textures.
-{TESCO_COMPLIANCE_SUFFIX}""",
-        # CREATIVE - Bold advertising
-        f"""Bold commercial advertising campaign photography of the provided product.
-Scene: Dramatic studio setup with colored gel lighting, {user_concept}.
-Background: Deep gradient backdrop (dark to darker), professional studio environment.
-Lighting: Cinematic three-point lighting with colored gels - teal/orange complementary scheme,
-strong key light (grid softbox left), subtle fill, dramatic rim light creating edge separation.
-Light falloff creating depth and dimension. Volumetric light haze optional.
-Camera: Shot on Hasselblad H6D-100c, 80mm f/2.8 lens, medium format quality.
-Shallow DOF with product sharp, slight motion blur on any floating elements.
-Style: Premium advertising campaign, {user_concept}, brand hero shot quality.
-Realism: Product surface catching colored light realistically, specular highlights on edges,
-natural material properties (metal reflects, matte absorbs), subtle lens flare if applicable.
-{TESCO_COMPLIANCE_SUFFIX}"""
-    ]
+    styles = ["studio", "lifestyle", "creative"]
 
     generated_base64 = []
 
-    for i, style_prompt in enumerate(styles):
+    for i, style in enumerate(styles):
         variation_num = i + 1
+        style_prompt = get_background_generation_prompt(style, user_concept)
         
         # Add delay between requests to avoid rate limiting (except for first request)
         if i > 0:
