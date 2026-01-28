@@ -7,8 +7,8 @@ from dotenv import load_dotenv
 from google import genai
 from google.genai import types
 from PIL import Image
+from app.core.shared_ai_client import LLMClient, get_model_id
 
-# Import prompts and config
 from app.prompts.generation_prompts import get_background_generation_prompt
 from app.config import AIConfig, Paths
 
@@ -21,8 +21,7 @@ print(f"[AI_SERVICE] GOOGLE_API_KEY loaded: {'Yes' if os.getenv('GOOGLE_API_KEY'
 # Get GCP credentials from environment variables
 PROJECT_ID = AIConfig.PROJECT_ID
 LOCATION = AIConfig.LOCATION
-# Use model from env (Imagen for image generation, Gemini for text)
-MODEL_ID = AIConfig.DEFAULT_MODEL
+MODEL_ID = get_model_id()
 
 
 def generate_variations(product_filename: str, user_concept: str) -> list[str]:
@@ -44,11 +43,7 @@ def generate_variations(product_filename: str, user_concept: str) -> list[str]:
         img.save(img_byte_arr, format='PNG')
         product_bytes = img_byte_arr.getvalue()
 
-    client = genai.Client(
-        vertexai=True,
-        project=PROJECT_ID,
-        location=LOCATION,
-    )
+    client = LLMClient.get_client()
 
     styles = ["studio", "lifestyle", "creative"]
 
@@ -119,7 +114,7 @@ def generate_variations_from_bytes(image_bytes: bytes, user_concept: str) -> lis
         product_bytes = img_byte_arr.getvalue()
 
     try:
-        client = GeminiClientFactory.get_client()
+        client = LLMClient.get_client()
     except Exception as e:
         print(f"Failed to initialize Gemini client: {e}")
         raise

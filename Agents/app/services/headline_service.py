@@ -13,7 +13,7 @@ from typing import Optional
 from google import genai
 from google.genai import types
 
-from app.core.shared_ai_client import GeminiClientFactory, get_model_id
+from app.core.shared_ai_client import LLMClient, get_model_id
 from app.core.rate_limiter import get_headline_rate_limiter
 from app.core.json_parser import (
     JSONParseError,
@@ -93,8 +93,8 @@ def _init_gemini_client():
     )
 
     try:
-        client = GeminiClientFactory.get_client()
-        log_json("INFO", f"✅ Gemini client initialized ({GeminiClientFactory.get_auth_method()})")
+        client = LLMClient.get_client()
+        log_json("INFO", f"✅ Gemini client initialized ({LLMClient.get_auth_method()})")
         return client
     except Exception as e:
         log_json("ERROR", f"❌ Failed to initialize Gemini client: {e}")

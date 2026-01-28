@@ -69,6 +69,9 @@ def init_agent():
 
 def is_agent_available():
     """Check if validation agent is available"""
+    global _agent_initialized
+    if not _agent_initialized:
+        init_agent()
     return _agent is not None
 
 

@@ -46,6 +46,11 @@ async def validate(req: ValidationRequest) -> ValidationResponse:
     logger.info(f"[VALIDATE] ========== NEW VALIDATION REQUEST ==========")
     logger.info(f"[VALIDATE] Received canvas data ({len(req.canvas)} chars)")
     
+    # Check if validation agent is available
+    from app.agents.builder import is_agent_available
+    if not is_agent_available():
+        logger.warning("[VALIDATE] LLM agent not available, using rule-based validation only")
+    
     try:
         decoded_canvas = base64.b64decode(req.canvas).decode("utf-8")
         logger.info(f"[VALIDATE] Decoded canvas size: {len(decoded_canvas)} chars")

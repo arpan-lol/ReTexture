@@ -21,24 +21,21 @@ from google.genai import types
 import os
 
 # Import new placement system
+from app.core.shared_ai_client import LLMClient
 from app.core.spatial_grid import SpatialGrid, Rectangle
 from app.core.placement_constraints import ConstraintScorer
 from app.core.placement_generator import CandidateGenerator
 
 router = APIRouter(prefix="/placement", tags=["placement"])
 
-# Configure Gemini - use Vertex AI client
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", os.getenv("GOOGLE_API_KEY", ""))
 model = None
 try:
-    client = genai.Client(
-        vertexai=True,
-        project=os.getenv("GCP_PROJECT_ID"),
-        location=os.getenv("GCP_LOCATION")
-    )
+    client = LLMClient.get_client()
     model = client.models
+    print(f"✅ [PLACEMENT] Gemini client initialized: {LLMClient.get_auth_method()}")
 except Exception as e:
     print(f"⚠️ [PLACEMENT] Gemini client init failed: {e}")
+    print("   Placement will use deterministic algorithm only (no LLM refinement)")
 
 
 # --- Rate Limiting ---
